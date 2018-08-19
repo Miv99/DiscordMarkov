@@ -1,0 +1,5 @@
+set preference for message length
+combine all data
+ignore bots when processing messages
+on_message ignores own messages
+get list of usernames and map to uid --> /markov [username]

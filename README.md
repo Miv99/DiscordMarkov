@@ -5,4 +5,4 @@ Discord bot that reads in all messages in a channel and creates a Markov chain u
 1. Create a Discord bot account
 2. Get its API key and put it in APIKey.txt (nothing else in the file)
 3. Add bot to your server
-Type /help for more info
+4. Type /help for more info

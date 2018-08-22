@@ -7,6 +7,7 @@ import numpy
 import bisect
 import random
 import pickle
+import configparser
 
 class Markov:
 	def __init__(self):
@@ -116,21 +117,12 @@ class Markov:
 					self.words[k][i] = (self.words[k][i][2]/sum, self.words[k][i][1], self.words[k][i][2])
 			self.words[k].sort()
 
-# DO NOT EVER CHANGE THIS
-global zero
-zero = datetime.datetime(year=1970, month=1, day=1)
+# Config file
+config = configparser.ConfigParser()
+config.read('config.ini')
 
 # user : Markov
 markovs = {}
-
-# Get API key
-with open('APIKey.txt', 'r') as file:
-	key = file.readline()
-if key == None:
-	print('APIKey.txt is missing')
-elif key == '':
-	print('Enter your discord bot\'s API key into APIKey.txt before running DiscordMarkov')
-	exit()
 
 client = discord.Client()
 	
@@ -182,41 +174,39 @@ async def update_logs(channel, max_messages_to_process):
 	metadata = await get_channel_metadata(channel.id)
 	last_message_timestamp = metadata[0]
 	
-	with open(channel.id + '/channel' + channel.id + '.csv', 'a') as file:
-		writer = csv.writer(file)
-		print('Recording...')
-		await client.send_message(channel, 'Recording logs... This may take a while depending on total number of messages.')
+	print('Recording...')
+	await client.send_message(channel, 'Recording logs... This may take a while depending on total number of messages.')
+	
+	async for message in logs:
+		# Remove all trailing whitespace
+		content = message.clean_content.rstrip()
+		# Remove all nonunicode
+		content = ''.join([x for x in content if ord(x) < 128])
 		
-		async for message in logs:
-			# Remove all trailing whitespace
-			content = message.clean_content.rstrip()
-			# Remove all nonunicode
-			content = ''.join([x for x in content if ord(x) < 128])
-			
-			#TODO: skip log file, just insert into markov
-			
-			# Record until last message saved
-			# Note: logs might not be sorted by timestamp
-			# Csv format: [seconds since 1/1/1970],[timestamp],[name],[message]
-			print(str(message.timestamp) + ' compared to ' + str(last_message_timestamp))
-			if str(message.timestamp) == str(last_message_timestamp):
-				print('Encountered start of last update. Stopping log recording.')
-				break
-			elif newest_message_timestamp_processed == -1:
-				# Messages always processed from newest to oldest, so first message processed
-				# is the newest
-				newest_message_timestamp_processed = message.timestamp
-				
-			try:
-				markovs[message.author.id].add_message(content)
-			except KeyError:
-				markovs[message.author.id] = Markov()
-				markovs[message.author.id].add_message(content)
+		#TODO: skip log file, just insert into markov
 		
-		for k in markovs.keys():
-			print('Finishing up for', k)
-			markovs[k].finish_adding_messages()
-		print('Finished recording logs')
+		# Record until last message saved
+		# Note: logs might not be sorted by timestamp
+		# Csv format: [seconds since 1/1/1970],[timestamp],[name],[message]
+		print(str(message.timestamp) + ' compared to ' + str(last_message_timestamp))
+		if str(message.timestamp) == str(last_message_timestamp):
+			print('Encountered start of last update. Stopping log recording.')
+			break
+		elif newest_message_timestamp_processed == -1:
+			# Messages always processed from newest to oldest, so first message processed
+			# is the newest
+			newest_message_timestamp_processed = message.timestamp
+			
+		try:
+			markovs[message.author.id].add_message(content)
+		except KeyError:
+			markovs[message.author.id] = Markov()
+			markovs[message.author.id].add_message(content)
+	
+	for k in markovs.keys():
+		print('Finishing up for', k)
+		markovs[k].finish_adding_messages()
+	print('Finished recording logs')
 	
 	await write_to_channel_metadata(channel.id, newest_message_timestamp_processed)
 	save_obj(markovs, 'MarkovChainData')
@@ -224,6 +214,14 @@ async def update_logs(channel, max_messages_to_process):
 	
 @client.event
 async def on_message(message):
+	global config
+
+	# Ignore messages from self or from bots
+	if client.user.id == message.author.id:
+		return
+	elif config['DEFAULT']['IgnoreBots'].lower() == 'true' and message.author.bot:
+		return
+
 	global markovs
 	
 	# Help page
@@ -234,7 +232,7 @@ async def on_message(message):
 		
 		await client.send_message(message.channel, msg)
 	# Update logs
-	if message.content == '/markov update':
+	elif message.content == '/markov update':
 		await client.send_message(message.channel, "Updating logs...")
 		await update_logs(message.channel, 100000000)
 		#await record_users(message.channel)
@@ -251,4 +249,4 @@ async def on_message(message):
 			await client.send_message(message.channel, 'No data on that user.')
 		
 # Start client
-client.run(key)
+client.run(config['DEFAULT']['APIKey'])

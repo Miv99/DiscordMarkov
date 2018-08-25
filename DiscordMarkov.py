@@ -1,13 +1,14 @@
 import discord
 from discord import ChannelType
 import os
-import csv
-import datetime
-import numpy
 import bisect
 import random
 import pickle
 import configparser
+import tkinter as tk
+from tkinter import filedialog
+import functools
+import asyncio
 
 class Markov:
 	def __init__(self):
@@ -91,6 +92,8 @@ class Markov:
 		return message
 		
 	def finish_adding_messages(self):
+		# Probabilities must be sorted so that bisect works correctly when picking a weighted random for generating messages
+	
 		# Calculate all probabilities of starters/lengths/all_nodes
 		for i in range(len(self.message_lengths)):
 			if i != 0:
@@ -117,6 +120,17 @@ class Markov:
 					self.words[k][i] = (self.words[k][i][2]/sum, self.words[k][i][1], self.words[k][i][2])
 			self.words[k].sort()
 
+class BackInputException(Exception):
+    pass
+			
+# List of strings to be ignored when processing messages
+# Ignore is done if string starts with anything in the list
+global message_ignore_list
+message_ignore_list = [
+'/markov',
+'/help'
+]
+			
 # Config file
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -124,20 +138,37 @@ config.read('config.ini')
 # user : Markov
 markovs = {}
 
+BACK_COMMAND = 'b'
+
+global client
 client = discord.Client()
+
+global client_ready_queue
+client_ready_queue = []
 	
 @client.event
 async def on_ready():
+	global client_ready_queue
+	
 	print('Logged in as')
 	print(client.user.name)
 	print(client.user.id)
-	print('-------------------')
+	line()
+	
+	print('Executing commands queue...')
+	for partial in client_ready_queue:
+		if asyncio.iscoroutinefunction(partial.func):
+			await partial()
+		else:
+			partial()
+	line()
+	print('Bot is ready.')
 	print('Type /help in discord for help page')
 	
 async def get_channel_metadata(channel_id):
 	last_message_timestamp = '-1'
 	try:
-		with open('Channels/' + channel_id + '/channel' + channel_id + 'meta.txt', 'r') as file:
+		with open('Channels\\' + channel_id + '\\channel' + channel_id + 'meta.txt', 'r') as file:
 			last_message_timestamp = file.readline()
 	except Exception:
 		# Meta file does not exist
@@ -145,28 +176,44 @@ async def get_channel_metadata(channel_id):
 	return [last_message_timestamp]
 
 async def write_to_channel_metadata(channel_id, newest_message_timestamp_processed):
-	with open('Channels/' + channel_id + '/channel' + channel_id + 'meta.txt', 'w') as file:
+	# Make directory for channel if it does not exist yet
+	if not os.path.exists('Channels'):
+		os.makedirs('Channels')
+	if not os.path.exists('Channels\\' + channel_id):
+		os.makedirs('Channels\\' + channel_id)
+		
+	with open('Channels\\' + channel_id + '\\channel' + channel_id + 'meta.txt', 'w') as file:
 		# Write timestamp of last processed message to meta file
 		file.write(str(newest_message_timestamp_processed))
 		
 def save_obj(obj, name):
-    with open(name + '.pkl', 'wb') as f:
-        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
-
+	print('Saving data...')
+	with open(name, 'wb') as f:
+		pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
+		print('Saved')
+		
 def load_obj(name):
-    with open(name + '.pkl', 'rb') as f:
-        return pickle.load(f)
+	print('Loading data...')
+	with open(name, 'rb') as f:
+		ret = pickle.load(f)
+		print('Loaded')
+		return ret
+		
+def is_ignored_message(message):
+	global message_ignore_list
+
+	for string in message_ignore_list:
+		if message.clean_content.startswith(string):
+			return True
+	return False
 		
 async def update_logs(channel, max_messages_to_process):
 	global markovs
 	
-	#TODO: reset all probabiltiies in all markovs to 0
-	
-	logs = client.logs_from(channel, max_messages_to_process)
-	
-	# Make directory for channel if it does not exist yet
-	if not os.path.exists(str(channel.id)):
-		os.makedirs(str(channel.id))
+	if max_messages_to_process == 0:
+		logs = client.logs_from(channel, 99999999999999)
+	else:
+		logs = client.logs_from(channel, max_messages_to_process)
 	
 	newest_message_timestamp_processed = -1
 	
@@ -174,23 +221,24 @@ async def update_logs(channel, max_messages_to_process):
 	metadata = await get_channel_metadata(channel.id)
 	last_message_timestamp = metadata[0]
 	
-	print('Recording...')
-	await client.send_message(channel, 'Recording logs... This may take a while depending on total number of messages.')
+	print('Recording messages from ' + channel.name + '...')
 	
 	async for message in logs:
+		if is_ignored_message(message):
+			continue
+			
+		#TODO: add oldest_message_timestamp_processed to allow for skipping messages that already have been processed --> re-request logs but with max_messages += (number of skipped messages) if max_messages != 0
+	
 		# Remove all trailing whitespace
 		content = message.clean_content.rstrip()
 		# Remove all nonunicode
 		content = ''.join([x for x in content if ord(x) < 128])
-		
-		#TODO: skip log file, just insert into markov
-		
+				
 		# Record until last message saved
 		# Note: logs might not be sorted by timestamp
-		# Csv format: [seconds since 1/1/1970],[timestamp],[name],[message]
-		print(str(message.timestamp) + ' compared to ' + str(last_message_timestamp))
+		#print(content)
 		if str(message.timestamp) == str(last_message_timestamp):
-			print('Encountered start of last update. Stopping log recording.')
+			#print('Encountered start of last update. Stopping log recording.')
 			break
 		elif newest_message_timestamp_processed == -1:
 			# Messages always processed from newest to oldest, so first message processed
@@ -204,16 +252,14 @@ async def update_logs(channel, max_messages_to_process):
 			markovs[message.author.id].add_message(content)
 	
 	for k in markovs.keys():
-		print('Finishing up for', k)
 		markovs[k].finish_adding_messages()
-	print('Finished recording logs')
+	print('Finished recording messages')
 	
 	await write_to_channel_metadata(channel.id, newest_message_timestamp_processed)
-	save_obj(markovs, 'MarkovChainData')
-	await client.send_message(channel, 'Finished updating logs.')
 	
 @client.event
 async def on_message(message):
+	global markovs
 	global config
 
 	# Ignore messages from self or from bots
@@ -221,21 +267,13 @@ async def on_message(message):
 		return
 	elif config['DEFAULT']['IgnoreBots'].lower() == 'true' and message.author.bot:
 		return
-
-	global markovs
 	
 	# Help page
 	if message.content == "/help":
-		msg = '/markov update - Updates logs\n'
-		msg += '/markov random - Random message from random user\n'
+		msg = '/markov random - Random message from random user\n'
 		msg += '/markov @user - Random message from mentioned user\n'
 		
 		await client.send_message(message.channel, msg)
-	# Update logs
-	elif message.content == '/markov update':
-		await client.send_message(message.channel, "Updating logs...")
-		await update_logs(message.channel, 100000000)
-		#await record_users(message.channel)
 	elif message.content == '/markov random':
 		m = markovs[random.choice(list(markovs))].generate_message()
 		await client.send_message(message.channel, m)
@@ -247,6 +285,110 @@ async def on_message(message):
 			await client.send_message(message.channel, m)
 		except:
 			await client.send_message(message.channel, 'No data on that user.')
+
+def line():
+	print('------------------------------')
+			
+def load_markovs(file_name):
+	global markovs
+	markovs = load_obj(file_name)
+	
+def input_with_back(prompt):
+	ret = input(prompt)
+	if ret == BACK_COMMAND:
+		raise BackInputException
+	return ret
 		
-# Start client
+def main_menu():
+	global client
+	global markovs
+	global client_ready_queue
+	
+	client_ready_queue.clear()
+
+	line()
+	try:
+		mode = input_with_back('1. Read messages from Discord\n2. Load existing data and run Markov bot\n')
+	except BackInputException:
+		quit()
+
+	if mode == '1':
+		channel_choice_menu()
+		
+		# Save data
+		file = filedialog.asksaveasfile(mode='w', defaultextension='.pkl')
+		if file is None:
+			main_menu()
+			return
+		client_ready_queue.append(functools.partial(save_obj, markovs, file.name))
+	elif mode == '2':
+		# Load data
+		file = filedialog.askopenfile()
+		if file is None:
+			main_menu()
+			return
+		client_ready_queue.append(functools.partial(load_markovs, file.name))
+	else:
+		print('Invalid input')
+		line()
+		main_menu()
+
+async def read_from_all_channels(num_messages):
+	for server in client.servers:
+		for channel in server.channels:
+			if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages:
+				await update_logs(channel, num_messages)
+		
+def channel_choice_menu():
+	global client
+	global client_ready_queue
+
+	line()
+	try:
+		mode = input_with_back('1. Choose server/channel to read from\n2. Read from all channels the bot is in\n')
+	except BackInputException:
+		main_menu()
+		return
+		
+	if mode == '1':
+		print('asd')
+	elif mode == '2':
+		line()
+		#TODO: be able to choose date range
+		try:
+			num_messages = prompt_int('Enter number of messages to be read\nEnter 0 to read all messages in the channel(s)')
+		except BackInputException:
+			channel_choice_menu()
+			return
+		line()
+		client_ready_queue.append(functools.partial(read_from_all_channels, num_messages))
+	else:
+		print('Invalid input')
+		line()
+		channel_choice_menu()
+
+def prompt_int(prompt):
+	'''
+	Prompts user for an integer >= 0
+	'''
+	try:
+		num = int(input_with_back(prompt + '\n'))
+		return num
+	except ValueError:
+		print('Invalid input')
+		line()
+		return prompt_int(prompt)
+	except BackInputException:
+		raise BackInputException
+			
+root = tk.Tk()
+root.withdraw()
+
+line()
+print('Enter "' + BACK_COMMAND + '" at any prompt to go back')
+
+main_menu()
+line()
+print('Logging in...')
+
 client.run(config['DEFAULT']['APIKey'])

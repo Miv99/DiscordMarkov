@@ -5,10 +5,10 @@ import bisect
 import random
 import pickle
 import configparser
-import tkinter as tk
-from tkinter import filedialog
-import functools
 import asyncio
+import sys
+import math
+import re
 
 class Markov:
 	def __init__(self):
@@ -77,7 +77,6 @@ class Markov:
 		length = self.message_lengths[bisect.bisect_left(self.message_lengths, (r, '', 0))][1]
 		r = random.random()
 		starter = self.starters[bisect.bisect_left(self.starters, (r, '', 0))][1]
-		
 		message = starter
 		
 		cur_length = 0
@@ -125,7 +124,6 @@ class BackInputException(Exception):
 			
 # List of strings to be ignored when processing messages
 # Ignore is done if string starts with anything in the list
-global message_ignore_list
 message_ignore_list = [
 '/markov',
 '/help'
@@ -139,31 +137,27 @@ config.read('config.ini')
 markovs = {}
 
 BACK_COMMAND = 'b'
+DATA_FOLDER = 'Data'
+CHANNELS_FOLDER = 'Channels'
 
-global client
 client = discord.Client()
-
-global client_ready_queue
-client_ready_queue = []
 	
 @client.event
 async def on_ready():
-	global client_ready_queue
-	
-	print('Logged in as')
-	print(client.user.name)
-	print(client.user.id)
-	line()
-	
-	print('Executing commands queue...')
-	for partial in client_ready_queue:
-		if asyncio.iscoroutinefunction(partial.func):
-			await partial()
-		else:
-			partial()
-	line()
-	print('Bot is ready.')
-	print('Type /help in discord for help page')
+		# Preparations in initial login
+		
+		print('Logged in as')
+		print(client.user.name)
+		print(client.user.id)
+		line()
+				
+		print('Bot is ready.')
+		print('Type /help in discord for help page')
+		print('Enter "' + BACK_COMMAND + '" at any prompt to go back')
+		
+		while True:
+			await main_menu()
+		
 	
 async def get_channel_metadata(channel_id):
 	last_message_timestamp = '-1'
@@ -172,27 +166,27 @@ async def get_channel_metadata(channel_id):
 			last_message_timestamp = file.readline()
 	except Exception:
 		# Meta file does not exist
-		print('Meta file for channel ' + channel_id + ' does not exist')
+		pass
 	return [last_message_timestamp]
 
 async def write_to_channel_metadata(channel_id, newest_message_timestamp_processed):
 	# Make directory for channel if it does not exist yet
-	if not os.path.exists('Channels'):
-		os.makedirs('Channels')
-	if not os.path.exists('Channels\\' + channel_id):
-		os.makedirs('Channels\\' + channel_id)
+	if not os.path.exists(CHANNELS_FOLDER):
+		os.makedirs(CHANNELS_FOLDER)
+	if not os.path.exists(CHANNELS_FOLDER + '\\' + channel_id):
+		os.makedirs(CHANNELS_FOLDER + '\\' + channel_id)
 		
-	with open('Channels\\' + channel_id + '\\channel' + channel_id + 'meta.txt', 'w') as file:
+	with open(CHANNELS_FOLDER + '\\' + channel_id + '\\channel' + channel_id + 'meta.txt', 'w') as file:
 		# Write timestamp of last processed message to meta file
 		file.write(str(newest_message_timestamp_processed))
 		
-def save_obj(obj, name):
+async def save_obj(obj, name):
 	print('Saving data...')
 	with open(name, 'wb') as f:
 		pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
 		print('Saved')
 		
-def load_obj(name):
+async def load_obj(name):
 	print('Loading data...')
 	with open(name, 'rb') as f:
 		ret = pickle.load(f)
@@ -200,16 +194,12 @@ def load_obj(name):
 		return ret
 		
 def is_ignored_message(message):
-	global message_ignore_list
-
 	for string in message_ignore_list:
 		if message.clean_content.startswith(string):
 			return True
 	return False
 		
-async def update_logs(channel, max_messages_to_process):
-	global markovs
-	
+async def update_logs(channel, max_messages_to_process):	
 	if max_messages_to_process == 0:
 		logs = client.logs_from(channel, 99999999999999)
 	else:
@@ -223,6 +213,7 @@ async def update_logs(channel, max_messages_to_process):
 	
 	print('Recording messages from ' + channel.name + '...')
 	
+	i = 0
 	async for message in logs:
 		if is_ignored_message(message):
 			continue
@@ -233,6 +224,8 @@ async def update_logs(channel, max_messages_to_process):
 		content = message.clean_content.rstrip()
 		# Remove all nonunicode
 		content = ''.join([x for x in content if ord(x) < 128])
+		print(str(i))
+		i = i + 1
 				
 		# Record until last message saved
 		# Note: logs might not be sorted by timestamp
@@ -277,8 +270,6 @@ async def on_message(message):
 	elif message.content == '/markov random':
 		m = markovs[random.choice(list(markovs))].generate_message()
 		await client.send_message(message.channel, m)
-	elif message.content == '/markov load':
-		markovs = load_obj('MarkovChainData')
 	elif message.content.startswith('/markov'):
 		try:
 			m = markovs[message.mentions[0].id].generate_message()
@@ -289,106 +280,176 @@ async def on_message(message):
 def line():
 	print('------------------------------')
 			
-def load_markovs(file_name):
+async def load_markovs(file_name):
 	global markovs
-	markovs = load_obj(file_name)
+	markovs = await load_obj(file_name)
 	
-def input_with_back(prompt):
-	ret = input(prompt)
+async def input_with_back(prompt):
+	print(prompt)
+	ret = await client.loop.run_in_executor(None, sys.stdin.readline)
+	# Remove trailing whitespace
+	ret = ret.rstrip()
 	if ret == BACK_COMMAND:
 		raise BackInputException
 	return ret
+			
+async def ask_save_file_name():
+	if not os.path.exists(DATA_FOLDER):
+		os.makedirs(DATA_FOLDER)
 		
-def main_menu():
-	global client
-	global markovs
-	global client_ready_queue
-	
-	client_ready_queue.clear()
-
 	line()
 	try:
-		mode = input_with_back('1. Read messages from Discord\n2. Load existing data and run Markov bot\n')
+		name = await input_with_back('Save file name: ')
+		if os.path.isfile(DATA_FOLDER + '\\' + name + '.pkl'):
+			confirm = await input_with_back('Overwrite existing file? (y/n)')
+			if confirm == 'y':
+				return DATA_FOLDER + '\\' + name + '.pkl'
+			else:
+				return None
+		return DATA_FOLDER + '\\' + name + '.pkl'
+	except BackInputException:
+		return None
+		
+async def ask_load_file_name():
+	if not os.path.exists(DATA_FOLDER):
+		os.makedirs(DATA_FOLDER)
+		
+	line()
+	i = 1
+	files = {}
+	for file in os.listdir(DATA_FOLDER + '\\'):
+		if file.endswith('.pkl'):
+			files[str(i)] = file
+			print(str(i) + '. ' + file)
+			i = i + 1
+			
+	if len(files) == 0:
+		print('No existing data to load')
+		return None
+		
+	try:
+		file_num = await prompt_int('Enter a file to load: ')
+		return DATA_FOLDER + '\\' + files[str(file_num)]
+	except BackInputException:
+		return None
+
+async def main_menu():
+	line()
+	try:
+		mode = await input_with_back('1. Read messages from Discord\n2. Load existing data\n3. Save current data')
 	except BackInputException:
 		quit()
 
 	if mode == '1':
-		channel_choice_menu()
-		
-		# Save data
-		file = filedialog.asksaveasfile(mode='w', defaultextension='.pkl')
-		if file is None:
-			main_menu()
-			return
-		client_ready_queue.append(functools.partial(save_obj, markovs, file.name))
+		await read_mode_menu()
 	elif mode == '2':
 		# Load data
-		file = filedialog.askopenfile()
-		if file is None:
-			main_menu()
+		file_name = await ask_load_file_name()
+		if file_name is None:
+			await main_menu()
 			return
-		client_ready_queue.append(functools.partial(load_markovs, file.name))
+		await load_markovs(file_name)
+	elif mode == '3':
+		# Save data
+		file_name = await ask_save_file_name()
+		if file_name is None:
+			await main_menu()
+			return
+		await save_obj(markovs, file_name)
 	else:
 		print('Invalid input')
-		line()
-		main_menu()
+		await main_menu()
 
 async def read_from_all_channels(num_messages):
 	for server in client.servers:
 		for channel in server.channels:
 			if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages:
 				await update_logs(channel, num_messages)
-		
-def channel_choice_menu():
-	global client
-	global client_ready_queue
-
+						
+async def read_mode_menu():
 	line()
 	try:
-		mode = input_with_back('1. Choose server/channel to read from\n2. Read from all channels the bot is in\n')
+		mode = await input_with_back('1. Choose server(s)/channel(s) to read from\n2. Read from all channels the bot is in')
 	except BackInputException:
 		main_menu()
 		return
 		
 	if mode == '1':
-		print('asd')
+		await channel_choice_menu()
 	elif mode == '2':
 		line()
 		#TODO: be able to choose date range
 		try:
-			num_messages = prompt_int('Enter number of messages to be read\nEnter 0 to read all messages in the channel(s)')
+			num_messages = await prompt_int('Enter number of messages to be read\nEnter 0 to read all messages in the channel(s)')
 		except BackInputException:
-			channel_choice_menu()
+			await read_mode_menu()
 			return
 		line()
-		client_ready_queue.append(functools.partial(read_from_all_channels, num_messages))
+		await read_from_all_channels(num_messages)
 	else:
 		print('Invalid input')
+		await read_mode_menu()
+		
+async def channel_choice_menu():
+	line()
+	s = 1
+	choices = {}
+	for server in client.servers:
+		print(str(s) + '. ' + server.name)
+		choices[str(s)] = server
+		c = ord('a')
+		m = 1
+		for channel in server.channels:
+			if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages: 
+				# a --> b --> ... --> z --> aa --> bb --> ...
+				channel_identifier = chr(c) * m
+				print('\t' + channel_identifier + '. ' + channel.name)
+				choices[str(s) + channel_identifier] = channel
+				c = c + 1
+				if c - ord('a') >= 26:
+					m = m + 1
+					c = ord('a')
+		s = s + 1
+	
+	try:
+		choice = await input_with_back('Pick the server(s)/channel(s) to read from, space-separated\nExample: "1b 1e 2a 3" will pick channels 1b, 1e, 2a, and all channels in 3')
 		line()
-		channel_choice_menu()
-
-def prompt_int(prompt):
+		read_from = set()
+		for s in choice.split():
+			# If no alphabet in string, then it is a server selection
+			if re.search('[a-zA-Z]', s):
+				read_from.add(choices[s])
+			else:
+				for channel in choices[s].channels:
+					if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages: 
+						read_from.add(channel)
+				
+		num_messages = await prompt_int('Enter number of messages to be read from each channel\nEnter 0 to read all messages in the channel(s)')
+		line()
+		
+		# Read in channels
+		for channel in read_from:
+			await update_logs(channel, num_messages)
+	except BackInputException:
+		await read_mode_menu()
+		return
+	except KeyError:
+		print('Invalid input')
+		await channel_choice_menu()
+	return None
+	
+async def prompt_int(prompt):
 	'''
 	Prompts user for an integer >= 0
 	'''
 	try:
-		num = int(input_with_back(prompt + '\n'))
+		num = int(await input_with_back(prompt))
 		return num
 	except ValueError:
 		print('Invalid input')
 		line()
-		return prompt_int(prompt)
+		return await prompt_int(prompt)
 	except BackInputException:
 		raise BackInputException
-			
-root = tk.Tk()
-root.withdraw()
-
-line()
-print('Enter "' + BACK_COMMAND + '" at any prompt to go back')
-
-main_menu()
-line()
-print('Logging in...')
 
 client.run(config['DEFAULT']['APIKey'])

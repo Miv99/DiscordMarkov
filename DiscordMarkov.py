@@ -9,6 +9,52 @@ import asyncio
 import sys
 import math
 import re
+import datetime
+
+# Note: all timestamps are kept as number of seconds since ZERO
+ZERO = datetime.datetime(year=1970, month=1, day=1)
+
+class MarkovContainer:
+	def __init__(self):
+		# user_id : Markov
+		self.markovs = {}
+		# channel_id : ChannelMetadata
+		self.channels_metadata = {}
+		
+class ChannelMetadata:
+	def __init__(self):
+		# Channel's first ever message's timestamp
+		self.first_message_timestamp = None
+		# List of ranges (tuples) of timestamps of messages that have already been processed
+		# Always sorted from greatest to least (newest to oldest)
+		# Guaranteed to contain no overlaps
+		self.processed_timestamp_ranges = []
+		# Last log update's first message processed's timestamp, as a datetime object
+		self.last_update_timestamp = None
+		
+	def add_timestamp_range(self, min_date, max_date):
+		self.processed_timestamp_ranges.append((min_date, max_date))
+		n = len(self.processed_timestamp_ranges)
+		self.processed_timestamp_ranges.sort()
+		
+		stack = []
+		stack.append(self.processed_timestamp_ranges[0])
+		for i in range(n - 1):
+			if stack[len(stack) - 1][1] < self.processed_timestamp_ranges[i + 1][0]:
+				stack.append(self.processed_timestamp_ranges[i + 1])
+			elif stack[len(stack) - 1][1] < self.processed_timestamp_ranges[i + 1][1]:
+				stack[len(stack) - 1] = (stack[len(stack) - 1][0], self.processed_timestamp_ranges[i + 1][1])
+				
+		self.processed_timestamp_ranges.clear()
+		for interval in stack:
+			self.processed_timestamp_ranges.append(stack.pop())
+			
+		# test
+		print('Ranges: ')
+		for a in self.processed_timestamp_ranges:
+			print(a)
+			
+		
 
 class Markov:
 	def __init__(self):
@@ -120,7 +166,7 @@ class Markov:
 			self.words[k].sort()
 
 class BackInputException(Exception):
-    pass
+	pass
 			
 # List of strings to be ignored when processing messages
 # Ignore is done if string starts with anything in the list
@@ -128,17 +174,15 @@ message_ignore_list = [
 '/markov',
 '/help'
 ]
+
+markov_c = MarkovContainer()
 			
 # Config file
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-# user : Markov
-markovs = {}
-
 BACK_COMMAND = 'b'
 DATA_FOLDER = 'Data'
-CHANNELS_FOLDER = 'Channels'
 
 client = discord.Client()
 	
@@ -158,28 +202,6 @@ async def on_ready():
 		while True:
 			await main_menu()
 		
-	
-async def get_channel_metadata(channel_id):
-	last_message_timestamp = '-1'
-	try:
-		with open('Channels\\' + channel_id + '\\channel' + channel_id + 'meta.txt', 'r') as file:
-			last_message_timestamp = file.readline()
-	except Exception:
-		# Meta file does not exist
-		pass
-	return [last_message_timestamp]
-
-async def write_to_channel_metadata(channel_id, newest_message_timestamp_processed):
-	# Make directory for channel if it does not exist yet
-	if not os.path.exists(CHANNELS_FOLDER):
-		os.makedirs(CHANNELS_FOLDER)
-	if not os.path.exists(CHANNELS_FOLDER + '\\' + channel_id):
-		os.makedirs(CHANNELS_FOLDER + '\\' + channel_id)
-		
-	with open(CHANNELS_FOLDER + '\\' + channel_id + '\\channel' + channel_id + 'meta.txt', 'w') as file:
-		# Write timestamp of last processed message to meta file
-		file.write(str(newest_message_timestamp_processed))
-		
 async def save_obj(obj, name):
 	print('Saving data...')
 	with open(name, 'wb') as f:
@@ -198,61 +220,197 @@ def is_ignored_message(message):
 		if message.clean_content.startswith(string):
 			return True
 	return False
-		
-async def update_logs(channel, max_messages_to_process):	
-	if max_messages_to_process == 0:
-		logs = client.logs_from(channel, 99999999999999)
+	
+async def to_seconds(message_timestamp):
+	# Convert message timestamp to seconds since ZERO
+	return (message_timestamp - ZERO).total_seconds()
+	
+async def asd():
+	current_timestamp_marker_index
+	
+async def update_logs(channel, max_messages_to_process):
+	try:
+		metadata = markov_c.channels_metadata[channel.id]
+	except KeyError:
+		markov_c.channels_metadata[channel.id] = ChannelMetadata()
+		metadata = markov_c.channels_metadata[channel.id]
+	
+	if isinstance(max_messages_to_process, int):		
+		if max_messages_to_process == 0:
+			max_messages_to_process = 99999999999999
+			
+			stop_on_start_of_last_update = True
+			ignore_messages_in_date_ranges = False
+			process_messages_in_range = False
+		elif max_messages_to_process == -1:
+			max_messages_to_process = 99999999999999
+			
+			stop_on_start_of_last_update = False
+			ignore_messages_in_date_ranges = True
+			process_messages_in_range = False
+		else:
+			stop_on_start_of_last_update = False
+			ignore_messages_in_date_ranges = True
+			process_messages_in_range = False
 	else:
-		logs = client.logs_from(channel, max_messages_to_process)
+		process_messages_in_range = True
+		# Request is for a date range
+		#TODO: extract min/max mm/dd/yyyy and turn into datetime objects
+		min_date = None
+		max_date = None
+		
+	logs = client.logs_from(channel, max_messages_to_process)
 	
 	newest_message_timestamp_processed = -1
 	
-	# Get last message saved
-	metadata = await get_channel_metadata(channel.id)
-	last_message_timestamp = metadata[0]
-	
 	print('Recording messages from ' + channel.name + '...')
 	
-	i = 0
-	async for message in logs:
-		if is_ignored_message(message):
-			continue
-			
-		#TODO: add oldest_message_timestamp_processed to allow for skipping messages that already have been processed --> re-request logs but with max_messages += (number of skipped messages) if max_messages != 0
+	messages_processed = 0
+	stopped_by = None
+	last_message = None
 	
-		# Remove all trailing whitespace
-		content = message.clean_content.rstrip()
-		# Remove all nonunicode
-		content = ''.join([x for x in content if ord(x) < 128])
-		print(str(i))
-		i = i + 1
+	# Read messages until the end is reached or when the start of the last update is reached
+	# Guaranteed not to read messages that have already been read
+	if stop_on_start_of_last_update:
+		async for message in logs:
+			last_message = message
+			
+			if newest_message_timestamp_processed == -1:
+				# Messages always processed from newest to oldest, so first message processed
+				# is the newest
+				newest_message_timestamp_processed = message.timestamp
+				max_date = message.timestamp
+
+			if is_ignored_message(message):
+				continue
+									
+			# Remove all trailing whitespace
+			content = message.clean_content.rstrip()
+			# Remove all nonunicode
+			content = ''.join([x for x in content if ord(x) < 128])
+			
+			messages_processed = messages_processed + 1
+					
+			# Record until last message saved
+			if str(message.timestamp) == str(metadata.last_update_timestamp):
+				break
 				
-		# Record until last message saved
-		# Note: logs might not be sorted by timestamp
-		#print(content)
-		if str(message.timestamp) == str(last_message_timestamp):
-			#print('Encountered start of last update. Stopping log recording.')
-			break
-		elif newest_message_timestamp_processed == -1:
-			# Messages always processed from newest to oldest, so first message processed
-			# is the newest
-			newest_message_timestamp_processed = message.timestamp
+			try:
+				markov_c.markovs[message.author.id].add_message(content)
+			except KeyError:
+				markov_c.markovs[message.author.id] = Markov()
+				markov_c.markovs[message.author.id].add_message(content)
+				
+		min_date = last_message.timestamp
+	# Read unread messages
+	elif ignore_messages_in_date_ranges:
+		timestamp_marker_max = len(metadata.processed_timestamp_ranges) - 1
+		current_timestamp_marker_index = 0
+		compare_date_ranges = timestamp_marker_max >= current_timestamp_marker_index
+		print('comparing ' + str(compare_date_ranges))
+	
+		async for message in logs:
+			last_message = message
 			
-		try:
-			markovs[message.author.id].add_message(content)
-		except KeyError:
-			markovs[message.author.id] = Markov()
-			markovs[message.author.id].add_message(content)
+			if newest_message_timestamp_processed == -1:
+				# Messages always processed from newest to oldest, so first message processed
+				# is the newest
+				newest_message_timestamp_processed = message.timestamp
+				max_date = message.timestamp
+
+			if is_ignored_message(message):
+				continue
+							
+			if compare_date_ranges:				
+				# Check if message is in current date range
+				#print('checking ' + str((message.timestamp - ZERO).total_seconds()) + ' and ' + str((metadata.processed_timestamp_ranges[current_timestamp_marker_index][0] - ZERO).total_seconds()) + ' - ' + str((metadata.processed_timestamp_ranges[current_timestamp_marker_index][1] - ZERO).total_seconds()))
+				if message.timestamp >= metadata.processed_timestamp_ranges[current_timestamp_marker_index][0] and message.timestamp <= metadata.processed_timestamp_ranges[current_timestamp_marker_index][1]:
+					continue
+				else:
+					# Iterate over date ranges until one where the start of the range is less than the message timestamp is reached
+					while current_timestamp_marker_index < timestamp_marker_max and message.timestamp < metadata.processed_timestamp_ranges[current_timestamp_marker_index][1]:
+						current_timestamp_marker_index = current_timestamp_marker_index + 1						
+				
+			# Remove all trailing whitespace
+			content = message.clean_content.rstrip()
+			# Remove all nonunicode
+			content = ''.join([x for x in content if ord(x) < 128])
+			
+			messages_processed = messages_processed + 1
+					
+			try:
+				markov_c.markovs[message.author.id].add_message(content)
+			except KeyError:
+				markov_c.markovs[message.author.id] = Markov()
+				markov_c.markovs[message.author.id].add_message(content)
+				
+		min_date = last_message.timestamp
+	# Read unread messages in a certain range
+	elif process_messages_in_range:
+		timestamp_marker_max = len(metadata.processed_timestamp_ranges) - 1
+		current_timestamp_marker_index = 0
+		compare_date_ranges = timestamp_marker_max >= current_timestamp_marker_index
 	
-	for k in markovs.keys():
-		markovs[k].finish_adding_messages()
+		async for message in logs:
+			last_message = message
+			
+			if newest_message_timestamp_processed == -1:
+				# Messages always processed from newest to oldest, so first message processed
+				# is the newest
+				newest_message_timestamp_processed = message.timestamp
+
+			if is_ignored_message(message):
+				continue
+				
+			if message.timestamp > max_date:
+				continue
+			# Stop when message's timestamp is past the min_date because messages are traversed from newest to oldest,
+			# so any message timestamp after the min_date will always be < min_date
+			elif message.timestamp < min_date:
+				break
+							
+			if compare_date_ranges:				
+				# Check if message is in current date range
+				if message.timestamp >= metadata.processed_timestamp_ranges[current_timestamp_marker_index][0] and message.timestamp <= metadata.processed_timestamp_ranges[current_timestamp_marker_index][1]:
+					continue
+				else:
+					# Iterate over date ranges until one where the start of the range is less than the message timestamp is reached
+					while current_timestamp_marker_index < timestamp_marker_max and message.timestamp < metadata.processed_timestamp_ranges[current_timestamp_marker_index][1]:
+						current_timestamp_marker_index = current_timestamp_marker_index + 1						
+				
+			# Remove all trailing whitespace
+			content = message.clean_content.rstrip()
+			# Remove all nonunicode
+			content = ''.join([x for x in content if ord(x) < 128])
+			
+			messages_processed = messages_processed + 1
+					
+			try:
+				markov_c.markovs[message.author.id].add_message(content)
+			except KeyError:
+				markov_c.markovs[message.author.id] = Markov()
+				markov_c.markovs[message.author.id].add_message(content)
+		
+	# test
+	print('Read in ' + str(messages_processed) + ' messages')
+	
+	# Update metadata
+	
+	# If number of processed messages was less than the requested, the last message processed must be the first message in the server
+	if messages_processed < max_messages_to_process:
+		metadata.first_message_timestamp = await to_seconds(last_message.timestamp)
+	
+	metadata.last_update_timestamp = newest_message_timestamp_processed
+	
+	metadata.add_timestamp_range(min_date, max_date)
+	
+	for k in markov_c.markovs.keys():
+		markov_c.markovs[k].finish_adding_messages()
 	print('Finished recording messages')
-	
-	await write_to_channel_metadata(channel.id, newest_message_timestamp_processed)
 	
 @client.event
 async def on_message(message):
-	global markovs
+	global markov_c
 	global config
 
 	# Ignore messages from self or from bots
@@ -268,11 +426,11 @@ async def on_message(message):
 		
 		await client.send_message(message.channel, msg)
 	elif message.content == '/markov random':
-		m = markovs[random.choice(list(markovs))].generate_message()
+		m = markov_c.markovs[random.choice(list(markov_c.markovs))].generate_message()
 		await client.send_message(message.channel, m)
 	elif message.content.startswith('/markov'):
 		try:
-			m = markovs[message.mentions[0].id].generate_message()
+			m = markov_c.markovs[message.mentions[0].id].generate_message()
 			await client.send_message(message.channel, m)
 		except:
 			await client.send_message(message.channel, 'No data on that user.')
@@ -281,8 +439,8 @@ def line():
 	print('------------------------------')
 			
 async def load_markovs(file_name):
-	global markovs
-	markovs = await load_obj(file_name)
+	global markov_c
+	markov_c = await load_obj(file_name)
 	
 async def input_with_back(prompt):
 	print(prompt)
@@ -366,6 +524,11 @@ async def read_from_all_channels(num_messages):
 			if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages:
 				await update_logs(channel, num_messages)
 						
+async def prompt_num_messages():
+	#TODO: be able to choose date range
+	ret = await prompt_int('Enter number of messages to be processed\nEnter 0 to process all messages in the channel(s) up to the last processed message\nEnter -1 to process all messages in the channel(s), ignoring already read ones')
+	return ret
+		
 async def read_mode_menu():
 	line()
 	try:
@@ -378,9 +541,8 @@ async def read_mode_menu():
 		await channel_choice_menu()
 	elif mode == '2':
 		line()
-		#TODO: be able to choose date range
 		try:
-			num_messages = await prompt_int('Enter number of messages to be read\nEnter 0 to read all messages in the channel(s)')
+			num_messages = await prompt_num_messages()
 		except BackInputException:
 			await read_mode_menu()
 			return
@@ -424,7 +586,7 @@ async def channel_choice_menu():
 					if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages: 
 						read_from.add(channel)
 				
-		num_messages = await prompt_int('Enter number of messages to be read from each channel\nEnter 0 to read all messages in the channel(s)')
+		num_messages = await prompt_num_messages()
 		line()
 		
 		# Read in channels

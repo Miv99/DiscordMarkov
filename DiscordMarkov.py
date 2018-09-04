@@ -10,9 +10,7 @@ import sys
 import math
 import re
 import datetime
-
-# Note: all timestamps are kept as number of seconds since ZERO
-ZERO = datetime.datetime(year=1970, month=1, day=1)
+from dateutil import tz
 
 class MarkovContainer:
 	def __init__(self):
@@ -25,7 +23,7 @@ class ChannelMetadata:
 	def __init__(self):
 		# Channel's first ever message's timestamp
 		self.first_message_timestamp = None
-		# List of ranges (tuples) of timestamps of messages that have already been processed
+		# List of ranges (tuples) of datetime of messages that have already been processed. Datetime objects are in UTC
 		# Always sorted from greatest to least (newest to oldest)
 		# Guaranteed to contain no overlaps
 		self.processed_timestamp_ranges = []
@@ -48,14 +46,7 @@ class ChannelMetadata:
 		self.processed_timestamp_ranges.clear()
 		for interval in stack:
 			self.processed_timestamp_ranges.append(stack.pop())
-			
-		# test
-		print('Ranges: ')
-		for a in self.processed_timestamp_ranges:
-			print(a)
-			
 		
-
 class Markov:
 	def __init__(self):
 		# Probability distribution of message lengths
@@ -221,29 +212,26 @@ def is_ignored_message(message):
 			return True
 	return False
 	
-async def to_seconds(message_timestamp):
-	# Convert message timestamp to seconds since ZERO
-	return (message_timestamp - ZERO).total_seconds()
-	
 async def asd():
 	current_timestamp_marker_index
 	
-async def update_logs(channel, max_messages_to_process):
+async def update_logs(channel, messages_param):
 	try:
 		metadata = markov_c.channels_metadata[channel.id]
 	except KeyError:
 		markov_c.channels_metadata[channel.id] = ChannelMetadata()
 		metadata = markov_c.channels_metadata[channel.id]
 	
-	if isinstance(max_messages_to_process, int):		
-		if max_messages_to_process == 0:
-			max_messages_to_process = 99999999999999
+	if isinstance(messages_param, int):		
+		# messages_param is the max number of messages to be processed
+		if messages_param == 0:
+			max_messages = 99999999999999
 			
 			stop_on_start_of_last_update = True
 			ignore_messages_in_date_ranges = False
 			process_messages_in_range = False
-		elif max_messages_to_process == -1:
-			max_messages_to_process = 99999999999999
+		elif messages_param == -1:
+			max_messages = 99999999999999
 			
 			stop_on_start_of_last_update = False
 			ignore_messages_in_date_ranges = True
@@ -253,29 +241,34 @@ async def update_logs(channel, max_messages_to_process):
 			ignore_messages_in_date_ranges = True
 			process_messages_in_range = False
 	else:
-		process_messages_in_range = True
 		# Request is for a date range
-		#TODO: extract min/max mm/dd/yyyy and turn into datetime objects
-		min_date = None
-		max_date = None
+		# message_param is a tuple containing 2 datetime objects
+		max_messages = 99999999999999
+		min_date = messages_param[0]
+		max_date = messages_param[1]
 		
-	logs = client.logs_from(channel, max_messages_to_process)
+		stop_on_start_of_last_update = False
+		ignore_messages_in_date_ranges = False
+		process_messages_in_range = True
+		
+	logs = client.logs_from(channel, max_messages)
 	
-	newest_message_timestamp_processed = -1
+	newest_message_timestamp_processed = datetime.datetime.now()
+	processed_newest = False
 	
 	print('Recording messages from ' + channel.name + '...')
 	
 	messages_processed = 0
-	stopped_by = None
 	last_message = None
 	
 	# Read messages until the end is reached or when the start of the last update is reached
 	# Guaranteed not to read messages that have already been read
-	if stop_on_start_of_last_update:
+	if not process_messages_in_range and stop_on_start_of_last_update:
 		async for message in logs:
 			last_message = message
 			
-			if newest_message_timestamp_processed == -1:
+			if not processed_newest:
+				processed_newest = True
 				# Messages always processed from newest to oldest, so first message processed
 				# is the newest
 				newest_message_timestamp_processed = message.timestamp
@@ -288,6 +281,8 @@ async def update_logs(channel, max_messages_to_process):
 			content = message.clean_content.rstrip()
 			# Remove all nonunicode
 			content = ''.join([x for x in content if ord(x) < 128])
+			if len(content) == 0:
+				continue
 			
 			messages_processed = messages_processed + 1
 					
@@ -303,16 +298,16 @@ async def update_logs(channel, max_messages_to_process):
 				
 		min_date = last_message.timestamp
 	# Read unread messages
-	elif ignore_messages_in_date_ranges:
+	elif not process_messages_in_range and ignore_messages_in_date_ranges:
 		timestamp_marker_max = len(metadata.processed_timestamp_ranges) - 1
 		current_timestamp_marker_index = 0
 		compare_date_ranges = timestamp_marker_max >= current_timestamp_marker_index
-		print('comparing ' + str(compare_date_ranges))
 	
 		async for message in logs:
 			last_message = message
 			
-			if newest_message_timestamp_processed == -1:
+			if not processed_newest:
+				processed_newest = True
 				# Messages always processed from newest to oldest, so first message processed
 				# is the newest
 				newest_message_timestamp_processed = message.timestamp
@@ -323,7 +318,6 @@ async def update_logs(channel, max_messages_to_process):
 							
 			if compare_date_ranges:				
 				# Check if message is in current date range
-				#print('checking ' + str((message.timestamp - ZERO).total_seconds()) + ' and ' + str((metadata.processed_timestamp_ranges[current_timestamp_marker_index][0] - ZERO).total_seconds()) + ' - ' + str((metadata.processed_timestamp_ranges[current_timestamp_marker_index][1] - ZERO).total_seconds()))
 				if message.timestamp >= metadata.processed_timestamp_ranges[current_timestamp_marker_index][0] and message.timestamp <= metadata.processed_timestamp_ranges[current_timestamp_marker_index][1]:
 					continue
 				else:
@@ -335,7 +329,9 @@ async def update_logs(channel, max_messages_to_process):
 			content = message.clean_content.rstrip()
 			# Remove all nonunicode
 			content = ''.join([x for x in content if ord(x) < 128])
-			
+			if len(content) == 0:
+				continue
+						
 			messages_processed = messages_processed + 1
 					
 			try:
@@ -350,11 +346,12 @@ async def update_logs(channel, max_messages_to_process):
 		timestamp_marker_max = len(metadata.processed_timestamp_ranges) - 1
 		current_timestamp_marker_index = 0
 		compare_date_ranges = timestamp_marker_max >= current_timestamp_marker_index
-	
+		
 		async for message in logs:
 			last_message = message
 			
-			if newest_message_timestamp_processed == -1:
+			if not processed_newest:
+				processed_newest = True
 				# Messages always processed from newest to oldest, so first message processed
 				# is the newest
 				newest_message_timestamp_processed = message.timestamp
@@ -362,6 +359,9 @@ async def update_logs(channel, max_messages_to_process):
 			if is_ignored_message(message):
 				continue
 				
+			# Convert message timestamp to be offset-aware to be able to compare to user-set aware ranges
+			message.timestamp = message.timestamp.replace(tzinfo=tz.tzutc())
+			
 			if message.timestamp > max_date:
 				continue
 			# Stop when message's timestamp is past the min_date because messages are traversed from newest to oldest,
@@ -376,13 +376,15 @@ async def update_logs(channel, max_messages_to_process):
 				else:
 					# Iterate over date ranges until one where the start of the range is less than the message timestamp is reached
 					while current_timestamp_marker_index < timestamp_marker_max and message.timestamp < metadata.processed_timestamp_ranges[current_timestamp_marker_index][1]:
-						current_timestamp_marker_index = current_timestamp_marker_index + 1						
+						current_timestamp_marker_index = current_timestamp_marker_index + 1
 				
 			# Remove all trailing whitespace
 			content = message.clean_content.rstrip()
 			# Remove all nonunicode
 			content = ''.join([x for x in content if ord(x) < 128])
-			
+			if len(content) == 0:
+				continue
+						
 			messages_processed = messages_processed + 1
 					
 			try:
@@ -397,16 +399,15 @@ async def update_logs(channel, max_messages_to_process):
 	# Update metadata
 	
 	# If number of processed messages was less than the requested, the last message processed must be the first message in the server
-	if messages_processed < max_messages_to_process:
-		metadata.first_message_timestamp = await to_seconds(last_message.timestamp)
+	if messages_processed < max_messages:
+		metadata.first_message_timestamp = last_message.timestamp.replace(tzinfo=tz.tzutc())
 	
-	metadata.last_update_timestamp = newest_message_timestamp_processed
+	metadata.last_update_timestamp = newest_message_timestamp_processed.replace(tzinfo=tz.tzutc())
 	
 	metadata.add_timestamp_range(min_date, max_date)
 	
 	for k in markov_c.markovs.keys():
 		markov_c.markovs[k].finish_adding_messages()
-	print('Finished recording messages')
 	
 @client.event
 async def on_message(message):
@@ -518,15 +519,50 @@ async def main_menu():
 		print('Invalid input')
 		await main_menu()
 
-async def read_from_all_channels(num_messages):
+async def read_from_all_channels(messages_to_process):
 	for server in client.servers:
 		for channel in server.channels:
 			if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages:
-				await update_logs(channel, num_messages)
+				await update_logs(channel, messages_to_process)
 						
-async def prompt_num_messages():
-	#TODO: be able to choose date range
-	ret = await prompt_int('Enter number of messages to be processed\nEnter 0 to process all messages in the channel(s) up to the last processed message\nEnter -1 to process all messages in the channel(s), ignoring already read ones')
+async def prompt_message_processing():
+	prompt = ('Enter number of messages to be processed or enter a dash-separated range of times in which all messages are processed.\n'
+	'\tTime range must be in format "MM/DD/YYYY HOUR:MIN", with HOUR:MIN in 24-hour clock\n'
+	'\tAssumes local computer\'s time zone\n'
+	'\tFor example, "09/12/1999 07:00 - 12/4/2018 13:00"\n'
+	'Enter 0 to process all messages in the channel(s) up to the last processed message\n'
+	'Enter -1 to process all messages in the channel(s), ignoring already read ones')
+	try:
+		str = await input_with_back(prompt)
+		return int(str)
+	except ValueError:
+		try:
+			strs = str.split('-')
+			if len(strs) != 2:
+				print('Invalid input')
+				line()
+				return await prompt_message_processing()
+			d1 = datetime.datetime.strptime(strs[0].strip(), '%m/%d/%Y %H:%M')
+			d2 = datetime.datetime.strptime(strs[1].strip(), '%m/%d/%Y %H:%M')
+			
+			if d1 > d2:
+				# Swap
+				d1, d2 = d2, d1
+			
+			# Convert to UTC because discordpy message timestamps are in UTC
+			d1 = d1.replace(tzinfo=tz.tzlocal()).astimezone(tz.tzutc())
+			d2 = d2.replace(tzinfo=tz.tzlocal()).astimezone(tz.tzutc())
+			
+			return (d1, d2)
+		except ValueError:
+			print('Invalid input')
+			line()
+			return await prompt_message_processing()
+		except BackInputException:
+			raise BackInputException
+	except BackInputException:
+		raise BackInputException
+		
 	return ret
 		
 async def read_mode_menu():
@@ -542,12 +578,12 @@ async def read_mode_menu():
 	elif mode == '2':
 		line()
 		try:
-			num_messages = await prompt_num_messages()
+			messages_to_process = await prompt_message_processing()
 		except BackInputException:
 			await read_mode_menu()
 			return
 		line()
-		await read_from_all_channels(num_messages)
+		await read_from_all_channels(messages_to_process)
 	else:
 		print('Invalid input')
 		await read_mode_menu()
@@ -586,12 +622,12 @@ async def channel_choice_menu():
 					if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages: 
 						read_from.add(channel)
 				
-		num_messages = await prompt_num_messages()
+		messages_to_process = await prompt_message_processing()
 		line()
 		
 		# Read in channels
 		for channel in read_from:
-			await update_logs(channel, num_messages)
+			await update_logs(channel, messages_to_process)
 	except BackInputException:
 		await read_mode_menu()
 		return

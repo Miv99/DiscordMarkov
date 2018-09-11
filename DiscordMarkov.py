@@ -181,11 +181,6 @@ try:
 except ValueError:
 	print('MessageLengthMultiplier in config.ini must be a float')
 	message_length_multiplier = 1.0
-try:
-	message_length_outlier_search_multiplier = float(config['DEFAULT']['MessageLengthOutlierSearchMultiplier'])
-except ValueError:
-	print('MessageLengthOutlierSearchMultiplier in config.ini must be a float')
-	message_length_outlier_search_multiplier = 1.4
 
 BACK_COMMAND = 'b'
 DATA_FOLDER = 'Data'

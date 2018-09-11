@@ -57,7 +57,7 @@ Here's an example:
 ```
 Each choice by the user is space-separated. Pick a specific channel by entering its server number and letter of the alphabet. Pick all channels in a server by entering only its server number.  
 Here's an example of reading in #rules and #general-chat from Random Server and all channels in Another Random Server:  
-```1a 1b 2```
+```1a 1b 2```  
 The order does not matter.  
 ### Reading in messages
 There are two main options for reading in messages: reading in a specific number, or reading in all messages in a certain date range  Messages that are markov commands are ignored and if IgnoreBots is true in config.ini, messages from bots are also ignored.  

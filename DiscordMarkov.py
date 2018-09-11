@@ -11,6 +11,7 @@ import math
 import re
 import datetime
 from dateutil import tz
+import numpy as np
 
 class MarkovContainer:
 	def __init__(self):
@@ -50,12 +51,12 @@ class ChannelMetadata:
 class Markov:
 	def __init__(self):
 		# Probability distribution of message lengths
-		# [(probability, len, total), ...]
+		# [(probability, message length, count of that message length), ...]
 		self.message_lengths = []
 		self.total_messages = 0
 	
 		# Probability distribution of starting words
-		# [(probability, word, total), ...]
+		# [(probability, word, count of that word), ...]
 		self.starters = []
 		
 		# Graph of words
@@ -110,8 +111,12 @@ class Markov:
 			prev = word
 		
 	def generate_message(self):
+		# Choose random length
 		r = random.random()
 		length = self.message_lengths[bisect.bisect_left(self.message_lengths, (r, '', 0))][1]
+		length = max(1, int(round(length * message_length_multiplier)))
+		
+		# Choose starting word
 		r = random.random()
 		starter = self.starters[bisect.bisect_left(self.starters, (r, '', 0))][1]
 		message = starter
@@ -125,7 +130,7 @@ class Markov:
 			cur_word = next
 			cur_length = cur_length + 1
 		
-		return message
+		return message		
 		
 	def finish_adding_messages(self):
 		# Probabilities must be sorted so that bisect works correctly when picking a weighted random for generating messages
@@ -171,6 +176,16 @@ markov_c = MarkovContainer()
 # Config file
 config = configparser.ConfigParser()
 config.read('config.ini')
+try:
+	message_length_multiplier = float(config['DEFAULT']['MessageLengthMultiplier'])
+except ValueError:
+	print('MessageLengthMultiplier in config.ini must be a float')
+	message_length_multiplier = 1.0
+try:
+	message_length_outlier_search_multiplier = float(config['DEFAULT']['MessageLengthOutlierSearchMultiplier'])
+except ValueError:
+	print('MessageLengthOutlierSearchMultiplier in config.ini must be a float')
+	message_length_outlier_search_multiplier = 1.4
 
 BACK_COMMAND = 'b'
 DATA_FOLDER = 'Data'
@@ -237,6 +252,7 @@ async def update_logs(channel, messages_param):
 			ignore_messages_in_date_ranges = True
 			process_messages_in_range = False
 		else:
+			max_messages = messages_param
 			stop_on_start_of_last_update = False
 			ignore_messages_in_date_ranges = True
 			process_messages_in_range = False
@@ -406,9 +422,6 @@ async def update_logs(channel, messages_param):
 	
 	metadata.add_timestamp_range(min_date, max_date)
 	
-	for k in markov_c.markovs.keys():
-		markov_c.markovs[k].finish_adding_messages()
-	
 @client.event
 async def on_message(message):
 	global markov_c
@@ -524,6 +537,8 @@ async def read_from_all_channels(messages_to_process):
 		for channel in server.channels:
 			if (channel.type == ChannelType.text or channel.type == ChannelType.group) and channel.permissions_for(server.me).read_messages:
 				await update_logs(channel, messages_to_process)
+	for k in markov_c.markovs.keys():
+		markov_c.markovs[k].finish_adding_messages()
 						
 async def prompt_message_processing():
 	prompt = ('Enter number of messages to be processed or enter a dash-separated range of times in which all messages are processed.\n'
@@ -628,6 +643,8 @@ async def channel_choice_menu():
 		# Read in channels
 		for channel in read_from:
 			await update_logs(channel, messages_to_process)
+		for k in markov_c.markovs.keys():
+			markov_c.markovs[k].finish_adding_messages()
 	except BackInputException:
 		await read_mode_menu()
 		return

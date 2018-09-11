@@ -1,4 +1,3 @@
-set preference for message length
 combine all data into uid "all" for a /markov all
 get list of usernames and map to uid --> /markov [username]
 

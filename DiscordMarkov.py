@@ -161,6 +161,19 @@ class Markov:
 					self.words[k][i] = (self.words[k][i][2]/sum, self.words[k][i][1], self.words[k][i][2])
 			self.words[k].sort()
 
+class UsernamesContainer:
+	'''
+	Usernames stored in lowercase only so that the get is not case-sensitive for user friendliness
+	'''
+	def __init__(self):
+		self.usernames = {}
+		
+	def add(self, uid, username):
+		self.usernames[username.lower()] = uid
+		
+	def get(self, username):
+		return self.usernames.get(username.lower())
+
 class BackInputException(Exception):
 	pass
 			
@@ -172,6 +185,7 @@ message_ignore_list = [
 ]
 
 markov_c = MarkovContainer()
+usernames_container = UsernamesContainer()
 			
 # Config file
 config = configparser.ConfigParser()
@@ -180,7 +194,7 @@ try:
 	message_length_multiplier = float(config['DEFAULT']['MessageLengthMultiplier'])
 except ValueError:
 	print('MessageLengthMultiplier in config.ini must be a float')
-	message_length_multiplier = 1.0
+	message_length_multiplier = 1.4
 
 BACK_COMMAND = 'b'
 DATA_FOLDER = 'Data'
@@ -189,19 +203,38 @@ client = discord.Client()
 	
 @client.event
 async def on_ready():
-		# Preparations in initial login
+	# Preparations in initial login
+	
+	print('Logged in as')
+	print(client.user.name)
+	print(client.user.id)
+	line()
+	
+	print('Updating usernames...')
+	await update_usernames()
+	line()
+			
+	print('Bot is ready.')
+	print('Type /help in discord for help page')
+	print('Enter "' + BACK_COMMAND + '" at any prompt to go back')
+	
+	while True:
+		await main_menu()
+			
+async def update_usernames():
+	global usernames_container
+	
+	try:
+		with open('usernames.pkl', 'rb') as f:
+			usernames_container = pickle.load(f)
+	except IOError:
+		pass
+	
+	for member in client.get_all_members():
+		usernames_container.add(member.id, member.name)
 		
-		print('Logged in as')
-		print(client.user.name)
-		print(client.user.id)
-		line()
-				
-		print('Bot is ready.')
-		print('Type /help in discord for help page')
-		print('Enter "' + BACK_COMMAND + '" at any prompt to go back')
-		
-		while True:
-			await main_menu()
+	with open('usernames.pkl', 'wb') as f:
+		pickle.dump(usernames_container, f, pickle.HIGHEST_PROTOCOL)
 		
 async def save_obj(obj, name):
 	print('Saving data...')
@@ -267,7 +300,7 @@ async def update_logs(channel, messages_param):
 	newest_message_timestamp_processed = datetime.datetime.now()
 	processed_newest = False
 	
-	print('Recording messages from ' + channel.name + '...')
+	print('Recording messages from ' + channel.server.name + '/#' + channel.name + '...')
 	
 	messages_processed = 0
 	last_message = None
@@ -430,19 +463,29 @@ async def on_message(message):
 	
 	# Help page
 	if message.content == "/help":
-		msg = '/markov random - Random message from random user\n'
-		msg += '/markov @user - Random message from mentioned user\n'
+		msg = '"/markov random" - Random message from random user\n'
+		msg += '"/markov @user" or "/markov username" - Random message from that user\n'
 		
 		await client.send_message(message.channel, msg)
 	elif message.content == '/markov random':
 		m = markov_c.markovs[random.choice(list(markov_c.markovs))].generate_message()
 		await client.send_message(message.channel, m)
 	elif message.content.startswith('/markov'):
-		try:
-			m = markov_c.markovs[message.mentions[0].id].generate_message()
-			await client.send_message(message.channel, m)
-		except:
-			await client.send_message(message.channel, 'No data on that user.')
+		if len(message.mentions) > 0:
+			try:
+				m = markov_c.markovs[message.mentions[0].id].generate_message()
+				await client.send_message(message.channel, m)
+			except:
+				await client.send_message(message.channel, 'No data on ' + message.mentions[0].name)
+		else:
+			# Check usernames list
+			username = message.content.split('/markov ', 1)[1]
+			uid = usernames_container.get(username)
+			if uid != None:
+				m = markov_c.markovs[uid].generate_message()
+				await client.send_message(message.channel, m)
+			else:
+				await client.send_message(message.channel, 'No data on ' + username)
 
 def line():
 	print('------------------------------')
@@ -522,7 +565,7 @@ async def main_menu():
 		if file_name is None:
 			await main_menu()
 			return
-		await save_obj(markovs, file_name)
+		await save_obj(markov_c, file_name)
 	else:
 		print('Invalid input')
 		await main_menu()

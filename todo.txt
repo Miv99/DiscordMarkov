@@ -1,4 +1,3 @@
-combine all data into uid "all" for a /markov all
-get list of usernames and map to uid --> /markov [username]
+improve add_message algorithm from O(n^2) to something that's not super slow
 
 when iterating through date ranges, skip rest of messages if start of current date range is first ever message timestamp (set flag if next is) and (check when flag is set:) current message timestamp is < max of current date range

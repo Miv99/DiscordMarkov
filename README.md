@@ -63,6 +63,6 @@ The order does not matter.
 There are two main options for reading in messages: reading in a specific number, or reading in all messages in a certain date range  Messages that are markov commands are ignored and if IgnoreBots is true in config.ini, messages from bots are also ignored.  
 To read in a certain number of messages, simply enter that number. This reads in x messages from when the command was given. Ignored messages count towards the number of read messages.  
 To read in messages in a range of dates, enter two dates separated by a dash. The dates must be in format "MM/DD/YYYY HOUR:MIN" with HOUR:MIN being in 24-hour clock. The following example reads in all messages from September 12, 1999 7AM to December 4, 2018 1PM.  
-```09/12/1999 07:00 - 12/4/2018 13:00```
+```09/12/1999 07:00 - 12/4/2018 13:00```  
 Entering 0 reads in all messages up to the last read message  
 Entering -1 reads in all messages up until the very beginning of the channel(s) while ignoring messages that have already been read  

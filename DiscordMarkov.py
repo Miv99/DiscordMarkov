@@ -12,6 +12,7 @@ import re
 import datetime
 from dateutil import tz
 import numpy as np
+from collections import OrderedDict
 
 class MarkovContainer:
 	def __init__(self):
@@ -51,16 +52,17 @@ class ChannelMetadata:
 class Markov:
 	def __init__(self):
 		# Probability distribution of message lengths
-		# [(probability, message length, count of that message length), ...]
-		self.message_lengths = []
+		# message_length : [probability, count]
+		self.message_lengths = OrderedDict()
 		self.total_messages = 0
 	
 		# Probability distribution of starting words
-		# [(probability, word, count of that word), ...]
-		self.starters = []
+		# word : [probability, count of that word]
+		self.starters = OrderedDict()
 		
 		# Graph of words
-		# {'a': [(0.1, 'b', 10), (1.0, 'c', 90)]]}
+		# Dictionary of OrderedDicts
+		# word : {next_word : [probability, count of next_word after word]}
 		self.words = {}
 		
 	def add_message(self, message):
@@ -71,95 +73,79 @@ class Markov:
 			return
 		
 		# Update count of generated messages' lengths
-		found = False
 		self.total_messages = self.total_messages + 1
-		for i in range(len(self.message_lengths)):
-			if self.message_lengths[i][1] == words_count:
-				self.message_lengths[i] = (self.message_lengths[i][0], self.message_lengths[i][1], self.message_lengths[i][2] + 1)
-				found = True
-				break
-		if found == False:
-			self.message_lengths.append((0, words_count, 1))
+		try:
+			self.message_lengths[words_count][1] = self.message_lengths[words_count][1] + 1
+		except KeyError:
+			self.message_lengths[words_count] = [0, 1]
 			
 		# Update count of starters
-		found = False
-		for i in range(len(self.starters)):
-			if self.starters[i][1] == words_list[0]:
-				self.starters[i] = (self.starters[i][0], self.starters[i][1], self.starters[i][2] + 1)
-				found = True
-				break
-		if found == False:
-			self.starters.append((0, words_list[0], 1))
-			# If first word not in starters, it must not be in words either
-			self.words[words_list[0]] = []
+		try:
+			self.starters[words_list[0]][1] = self.starters[words_list[0]][1] + 1
+		except KeyError:
+			self.starters[words_list[0]] = [0, 1]
 			
 		# Update counts of all words in message
 		prev = words_list[0]
 		for word in words_list[1:]:
-			try:
-				found = False
-				for i in range(len(self.words[prev])):
-					if word == self.words[prev][i][1]:
-						# Increase count
-						self.words[prev][i] = (self.words[prev][i][0], self.words[prev][i][1], self.words[prev][i][2] + 1)
-						found = True
-						break
-				if found == False:
-					self.words[prev].append((0, word, 1))
-			except KeyError:
-				self.words[prev] = []
+			if self.words.get(prev) is None:
+				self.words[prev] = OrderedDict()
+		
+			if self.words[prev].get(word) is None:
+				self.words[prev][word] = [0, 1]
+			else:
+				self.words[prev][word][1] = self.words[prev][word][1] + 1
 			prev = word
 		
 	def generate_message(self):
 		# Choose random length
 		r = random.random()
-		length = self.message_lengths[bisect.bisect_left(self.message_lengths, (r, '', 0))][1]
+		length = list(self.message_lengths.items())[bisect.bisect_left([x[0] for x in self.message_lengths.values()], r)][0]
 		length = max(1, int(round(length * message_length_multiplier)))
 		
 		# Choose starting word
 		r = random.random()
-		starter = self.starters[bisect.bisect_left(self.starters, (r, '', 0))][1]
+		starter = list(self.starters.items())[bisect.bisect_left([x[0] for x in self.starters.values()], r)][0]
 		message = starter
 		
 		cur_length = 0
 		cur_word = starter
 		while cur_length < length and cur_word in self.words and len(self.words[cur_word]) > 0:
 			r = random.random()
-			next = self.words[cur_word][bisect.bisect_left(self.words[cur_word], (r, '', 0))][1]
+			next = list(self.words[cur_word].items())[bisect.bisect_left([x[0] for x in self.words[cur_word].values()], r)][0]
 			message += ' ' + next
 			cur_word = next
 			cur_length = cur_length + 1
 		
-		return message		
+		return message
 		
 	def finish_adding_messages(self):
 		# Probabilities must be sorted so that bisect works correctly when picking a weighted random for generating messages
-	
+
+		# Sort by count so that probability is always increasing
+		self.message_lengths = OrderedDict(sorted(self.message_lengths.items(), key=lambda x: x[1][1]))
+		self.starters = OrderedDict(sorted(self.starters.items(), key=lambda x: x[1][1]))
+
 		# Calculate all probabilities of starters/lengths/all_nodes
-		for i in range(len(self.message_lengths)):
-			if i != 0:
-				self.message_lengths[i] = (self.message_lengths[i][2]/self.total_messages + self.message_lengths[i - 1][0], self.message_lengths[i][1], self.message_lengths[i][2])
-			else:
-				self.message_lengths[i] = (self.message_lengths[i][2]/self.total_messages, self.message_lengths[i][1], self.message_lengths[i][2])
-		for i in range(len(self.starters)):
-			if i != 0:
-				self.starters[i] = (self.starters[i][2]/self.total_messages + self.starters[i - 1][0], self.starters[i][1], self.starters[i][2])
-			else:
-				self.starters[i] = (self.starters[i][2]/self.total_messages, self.starters[i][1], self.starters[i][2])
-			
-		self.message_lengths.sort()
-		self.starters.sort()
-			
+		prev_probability = 0
+		for k in self.message_lengths.keys():
+			self.message_lengths[k][0] = prev_probability + self.message_lengths[k][1]/self.total_messages
+			prev_probability = self.message_lengths[k][0]
+		prev_probability = 0
+		for k in self.starters.keys():
+			self.starters[k][0] = prev_probability + self.starters[k][1]/self.total_messages
+			prev_probability = self.starters[k][0]
+						
 		for k in self.words.keys():
 			sum = 0
-			for i in range(len(self.words[k])):
-				sum += self.words[k][i][2]
-			for i in range(len(self.words[k])):
-				if i != 0:
-					self.words[k][i] = (self.words[k][i][2]/sum + self.words[k][i - 1][0], self.words[k][i][1], self.words[k][i][2])
-				else:
-					self.words[k][i] = (self.words[k][i][2]/sum, self.words[k][i][1], self.words[k][i][2])
-			self.words[k].sort()
+			for v in self.words[k].values():
+				sum += v[1]
+				
+			self.words[k] = OrderedDict(sorted(self.words[k].items(), key=lambda x: x[1][1]))
+			prev_probability = 0
+			for k2 in self.words[k].keys():
+				self.words[k][k2][0] = prev_probability + self.words[k][k2][1]/sum
+				prev_probability = self.words[k][k2][0]
 
 class UsernamesContainer:
 	'''

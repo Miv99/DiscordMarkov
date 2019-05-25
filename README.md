@@ -6,8 +6,17 @@ How much is read in is determined by the user. They can set a range of dates and
 ## Getting Started
 
 # Prerequisites
-1. Python 3.5 or higher  
-2. discord.py - https://github.com/Rapptz/discord.py
+1. Python 3.5 or 3.6 (3.7 and above do not work)
+2. discord.py v0.16.12 - https://github.com/Rapptz/discord.py (correct version very important; some features were removed in v1.0+)
+3. dateutil - https://dateutil.readthedocs.io/en/stable/
+4. numpy - https://www.numpy.org/
+
+Steps 2-4 can be installed with the following pip commands:
+```
+pip install discord.py==0.16.12
+pip install python-dateutil
+pip install numpy
+```
 
 # Setting up the bot
 1. Create a Discord bot account  
